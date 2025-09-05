@@ -1,43 +1,43 @@
 import logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("app")
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import PlainTextResponse
 from services import twilio_service, openai_service
+
+# Configuração do logger
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("app")
 
 app = FastAPI()
 
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "Nuvia Assistant online 🚀"}
+
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(request: Request):
-    data = await request.form()
-    user_message = data.get("Body", "")
-    from_number = data.get("From", "")
-
     try:
-        app.logger.info(f"📩 Mensagem recebida de {from_number}: {user_message}")
+        form = await request.form()
+        from_number = form.get("From")
+        user_message = form.get("Body")
 
-        # Extrair evento estruturado da IA
-        event = await openai_service.get_event_from_text(user_message)
+        logger.info(f"📩 Mensagem recebida de {from_number}: {user_message}")
 
-        if event and "titulo" in event:
-            titulo = event.get("titulo")
-            descricao = event.get("descricao", "")
-            data_evento = event.get("data")
-            hora_evento = event.get("hora")
+        # Envia a mensagem para GPT
+        logger.info(f"🤖 Enviando para GPT: {user_message}")
+        reply = await openai_service.get_chat_response(user_message)
+        logger.info(f"🤖 Resposta da IA: {reply}")
 
-            resumo = (
-                f"✅ Evento criado com sucesso!\n\n"
-                f"📌 *{titulo}*\n"
-                f"📝 {descricao}\n"
-                f"📅 {data_evento} às {hora_evento}"
-            )
+        # Envia resposta pelo WhatsApp
+        await twilio_service.send_message(from_number, reply)
 
-            # (futuramente: salvar em Supabase + criar no calendário real)
-            await twilio_service.send_message(from_number, resumo)
-        else:
-            await twilio_service.send_message(from_number, "⚠️ Não consegui entender os detalhes do evento. Pode reformular?")
+        return PlainTextResponse("OK", status_code=200)
 
     except Exception as e:
-        app.logger.error(f"❌ Erro no webhook: {e}")
-        await twilio_service.send_message(from_number, "⚠️ Ocorreu um erro ao processar sua mensagem.")
+        logger.error(f"❌ Erro no webhook: {e}")
+        try:
+            if "from_number" in locals():
+                await twilio_service.send_message(from_number, "⚠️ Ocorreu um erro ao processar sua mensagem.")
+        except Exception as send_error:
+            logger.error(f"❌ Falha ao enviar mensagem de erro pelo Twilio: {send_error}")
 
-    return {"status": "ok"}
+        return PlainTextResponse("Erro interno", status_code=500)
