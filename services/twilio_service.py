@@ -1,38 +1,32 @@
+# services/twilio_service.py
 import os
 import logging
-import httpx
+from twilio.rest import Client
 
 logger = logging.getLogger(__name__)
 
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
+TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")  # <- precisa vir do .env
+
+client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 
 async def send_message(to: str, body: str):
     """
-    Envia mensagem WhatsApp usando Twilio (versão assíncrona com httpx).
+    Envia mensagem pelo WhatsApp usando Twilio
     """
     try:
-        url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+        logger.info(f"📤 Enviando mensagem de {TWILIO_WHATSAPP_NUMBER} para {to}: {body}")
 
-        data = {
-            "From": f"whatsapp:{TWILIO_WHATSAPP_NUMBER}",
-            "To": to,
-            "Body": body
-        }
+        message = client.messages.create(
+            from_=TWILIO_WHATSAPP_NUMBER,  # <-- garante que usa do .env
+            to=to,
+            body=body
+        )
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(url, data=data, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
-
-        if resp.status_code == 201:
-            sid = resp.json().get("sid")
-            logger.info(f"✅ Mensagem enviada com SID: {sid}")
-            return sid
-        else:
-            logger.error(f"❌ Erro ao enviar mensagem para {to}: {resp.text}")
-            return None
-
+        logger.info(f"✅ Mensagem enviada com SID: {message.sid}")
+        return message
     except Exception as e:
-        logger.error(f"❌ Falha ao enviar mensagem para {to}: {e}")
+        logger.error(f"❌ Erro ao enviar mensagem para {to}: {e}")
         return None
