@@ -1,71 +1,47 @@
-import logging
-import httpx
 import os
-from openai import AsyncOpenAI
-from config import OPENAI_API_KEY
+import logging
+from openai import OpenAI
 
 logger = logging.getLogger("services.openai_service")
 
-# Cliente assíncrono OpenAI
-client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-
+# Inicializa cliente OpenAI com a chave da API
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 async def process_text_message(message: str) -> str:
     """
-    Envia uma mensagem de texto para o modelo GPT e retorna a resposta.
+    Processa uma mensagem de texto com o modelo GPT.
+    Retorna a resposta gerada ou mensagem de erro.
     """
-    logger.info(f"🤖 Enviando para GPT: {message}")
     try:
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",  # rápido e barato, pode trocar para "gpt-4o"
+        logger.info(f"🤖 Enviando para GPT: {message}")
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",  # modelo rápido e barato
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "Você é uma secretária pessoal inteligente e cordial. "
-                        "Ajude o usuário a organizar reuniões, compromissos e lembretes. "
-                        "Sempre confirme o que entendeu antes de registrar no calendário."
+                        "Você é uma secretária pessoal chamada Nuvia. "
+                        "Sua função é organizar compromissos, criar lembretes "
+                        "e responder de forma simpática e profissional."
                     ),
                 },
                 {"role": "user", "content": message},
             ],
         )
-        reply = response.choices[0].message.content
+
+        reply = response.choices[0].message.content.strip()
         logger.info(f"🤖 Resposta da IA: {reply}")
         return reply
+
     except Exception as e:
         logger.error(f"❌ Erro GPT: {e}")
-        return "⚠️ Erro ao processar sua mensagem."
+        return "⚠️ Desculpe, ocorreu um erro ao processar sua mensagem."
 
 
-async def transcribe_audio(media_url: str) -> str | None:
+async def process_audio_message(audio_text: str) -> str:
     """
-    Baixa um áudio do Twilio e envia para o Whisper (gpt-4o-transcribe).
-    Retorna o texto transcrito ou None em caso de falha.
+    Processa mensagens de áudio transcritas.
+    O parâmetro recebido já deve ser o texto da transcrição.
     """
-    logger.info(f"🎙️ Transcrevendo áudio de {media_url}")
-    try:
-        async with httpx.AsyncClient() as client_http:
-            audio = await client_http.get(media_url)
-            audio.raise_for_status()
-            audio_bytes = audio.content
-
-        # salvar temporariamente
-        temp_file = "temp_audio.ogg"
-        with open(temp_file, "wb") as f:
-            f.write(audio_bytes)
-
-        # enviar para OpenAI Whisper
-        with open(temp_file, "rb") as f:
-            transcript = await client.audio.transcriptions.create(
-                model="gpt-4o-transcribe",
-                file=f,
-            )
-
-        os.remove(temp_file)  # limpar arquivo temporário
-        logger.info(f"✅ Transcrição concluída: {transcript.text}")
-        return transcript.text
-
-    except Exception as e:
-        logger.error(f"❌ Erro Whisper: {e}")
-        return None
+    return await process_text_message(audio_text)
