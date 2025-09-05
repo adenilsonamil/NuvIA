@@ -1,3 +1,6 @@
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("app")
 from fastapi import FastAPI, Request
 from services import twilio_service, openai_service
 
