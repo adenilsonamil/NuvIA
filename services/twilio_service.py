@@ -1,46 +1,38 @@
 import os
 import logging
-from twilio.rest import Client
+import httpx
 
-# Configuração do logger
 logger = logging.getLogger(__name__)
 
-# Carrega variáveis de ambiente
-TWILIO_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
-TWILIO_PHONE = os.getenv("TWILIO_PHONE", "").strip()
-
-# Inicializa cliente Twilio
-client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
 
 
-async def send_whatsapp_message(to: str, body: str):
+async def send_message(to: str, body: str):
     """
-    Envia mensagem de WhatsApp via Twilio (assíncrono).
+    Envia mensagem WhatsApp usando Twilio (versão assíncrona com httpx).
     """
     try:
-        if not TWILIO_PHONE:
-            logger.error("❌ TWILIO_PHONE não configurado no .env")
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+
+        data = {
+            "From": f"whatsapp:{TWILIO_WHATSAPP_NUMBER}",
+            "To": to,
+            "Body": body
+        }
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, data=data, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
+
+        if resp.status_code == 201:
+            sid = resp.json().get("sid")
+            logger.info(f"✅ Mensagem enviada com SID: {sid}")
+            return sid
+        else:
+            logger.error(f"❌ Erro ao enviar mensagem para {to}: {resp.text}")
             return None
 
-        # Garante que remetente tenha prefixo whatsapp:
-        from_number = TWILIO_PHONE if TWILIO_PHONE.startswith("whatsapp:") else f"whatsapp:{TWILIO_PHONE}"
-
-        logger.info(f"📤 Enviando mensagem de {from_number} para {to}: {body}")
-
-        message = client.messages.create(
-            from_=from_number,
-            to=to,
-            body=body
-        )
-
-        logger.info(f"✅ Mensagem enviada com SID: {message.sid}")
-        return message.sid
-
     except Exception as e:
-        logger.error(f"❌ Erro ao enviar mensagem para {to}: {e}")
+        logger.error(f"❌ Falha ao enviar mensagem para {to}: {e}")
         return None
-
-
-# Alias para compatibilidade
-send_message = send_whatsapp_message
