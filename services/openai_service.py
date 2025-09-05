@@ -1,34 +1,24 @@
-import openai
-import requests
-import config
+from openai import OpenAI
+import os
 
-openai.api_key = config.OPENAI_API_KEY
+# Inicializa o cliente usando a variável de ambiente OPENAI_API_KEY
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def transcribe_audio(media_url):
-    audio = requests.get(media_url).content
-    transcript = openai.Audio.transcriptions.create(
-        model="whisper-1",
-        file=("audio.ogg", audio)
-    )
-    return transcript["text"]
-
-def interpret_text(text):
-    prompt = f"""
-    Interprete o texto a seguir como uma intenção de calendário.
-    Retorne em JSON válido com: action(create|update|delete|list),
-    title, datetime (YYYY-MM-DD HH:MM), calendar (google|outlook|apple).
-
-    Texto: "{text}"
+def interpret_text(prompt: str) -> str:
     """
-
-    resp = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "system", "content": "Você é um assistente de calendário."},
-                  {"role": "user", "content": prompt}]
-    )
-
-    import json
+    Interpreta o texto enviado pelo usuário (mensagem do WhatsApp).
+    Usa o modelo GPT para entender a intenção e responder.
+    """
     try:
-        return json.loads(resp["choices"][0]["message"]["content"])
-    except:
-        return {"action": "none"}
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",  # Modelo rápido e barato
+            messages=[
+                {"role": "system", "content": "Você é um assistente de calendário integrado com WhatsApp."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+
+        return resp.choices[0].message.content.strip()
+
+    except Exception as e:
+        return f"⚠️ Erro ao processar com a IA: {str(e)}"
