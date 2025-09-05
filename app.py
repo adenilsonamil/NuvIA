@@ -1,71 +1,42 @@
-import os
 import logging
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from services import twilio_service, openai_service, google_calendar
 
-# Configuração de logs
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
 @app.get("/")
-async def home():
-    return {"status": "✅ Secretaria Virtual rodando com sucesso!"}
+async def root():
+    return {"status": "ok", "message": "🤖 Secretaria pessoal rodando."}
 
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook(
-    request: Request,
-    Body: str = Form(...),
-    From: str = Form(...)
-):
-    """
-    Webhook do Twilio para receber mensagens do WhatsApp
-    """
+async def whatsapp_webhook(request: Request):
     try:
-        logger.info(f"📩 Mensagem recebida de {From}: {Body}")
+        data = await request.form()
+        user_message = data.get("Body", "").strip()
+        from_number = data.get("From")
 
-        # Interpretação da mensagem usando OpenAI
-        meeting_info = await openai_service.extract_meeting_info(Body)
+        logger.info(f"📩 Mensagem recebida de {from_number}: {user_message}")
 
-        if not meeting_info or "data_hora" not in meeting_info:
-            resposta = "❌ Não consegui entender os detalhes da reunião. Pode repetir de outra forma?"
-            await twilio_service.send_message(From, resposta)
-            return PlainTextResponse("OK")
+        # Interpreta a mensagem usando IA
+        meeting_info = openai_service.extract_meeting_info(user_message)
 
-        # Criar evento no Google Calendar
-        event = await google_calendar.create_event(
-            titulo=meeting_info.get("titulo", "Reunião"),
-            data_hora=meeting_info["data_hora"],
-            local=meeting_info.get("local", ""),
-            notas=meeting_info.get("notas", "")
-        )
+        if meeting_info:
+            # Cria a reunião direto no Google Calendar
+            response = google_calendar.create_event(meeting_info)
 
-        # Montar resposta humanizada
-        resposta = (
-            "📅 Reunião confirmada!\n"
-            f"• **Título**: {meeting_info.get('titulo', 'Reunião')}\n"
-            f"• **Data/Hora**: {meeting_info['data_hora']}\n"
-        )
+            # Responde para o usuário
+            twilio_service.send_message(from_number, response)
+        else:
+            # Se não for reunião, responde de forma genérica
+            fallback = "🤖 Posso ajudar a agendar reuniões e lembretes. Diga algo como: 'Agende uma reunião amanhã às 14h no escritório'."
+            twilio_service.send_message(from_number, fallback)
 
-        if meeting_info.get("local"):
-            resposta += f"• **Local**: {meeting_info['local']}\n"
-        if meeting_info.get("notas"):
-            resposta += f"• **Notas**: {meeting_info['notas']}\n"
-
-        resposta += "✅ Evento adicionado ao Google Calendar."
-
-        # Enviar confirmação para o usuário
-        await twilio_service.send_message(From, resposta)
-        logger.info("✅ Evento criado e resposta enviada")
-
-        return PlainTextResponse("OK")
+        return JSONResponse(content={"status": "success"}, status_code=200)
 
     except Exception as e:
         logger.error(f"Erro no webhook: {e}")
-        await twilio_service.send_message(
-            From,
-            "⚠️ Ocorreu um erro ao tentar registrar sua reunião. Tente novamente em instantes."
-        )
-        return PlainTextResponse("Erro interno", status_code=500)
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
