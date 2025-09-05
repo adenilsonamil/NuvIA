@@ -1,66 +1,117 @@
-import logging
 import os
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse
-from dotenv import load_dotenv
+import logging
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import PlainTextResponse
+from twilio.twiml.messaging_response import MessagingResponse
+import openai
+import httpx
 
-from services import twilio_service, openai_service, supabase_client
-
-# Carrega variáveis do .env
-load_dotenv()
-
-# Configuração do log
+# Configuração do logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
 
+# Configurações fixas
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "SUA_CHAVE_OPENAI")
+TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
+
+openai.api_key = OPENAI_API_KEY
+
+# Inicialização do FastAPI
 app = FastAPI()
 
 
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    return "<h2>🚀 API de Integração WhatsApp + Google Calendar</h2>"
+# Função para processar texto com GPT
+async def process_text_message(message: str) -> str:
+    logger.info(f"🤖 Enviando mensagem para OpenAI: {message}")
 
-
-@app.post("/webhook/whatsapp")
-async def whatsapp_webhook(request: Request):
     try:
-        form = await request.form()
-        From = form.get("From")
-        Body = form.get("Body")
+        response = await openai.ChatCompletion.acreate(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Você é uma secretária pessoal que ajuda com calendários e lembretes."},
+                {"role": "user", "content": message}
+            ]
+        )
+        reply = response.choices[0].message["content"]
+        logger.info(f"🤖 Resposta da IA: {reply}")
+        return reply
+    except Exception as e:
+        logger.error(f"❌ Erro na OpenAI: {e}")
+        return "⚠️ Erro ao processar sua mensagem."
 
-        logger.info(f"📩 Mensagem recebida de {From}: {Body}")
 
-        # Processa mensagem com IA
-        ai_response = await openai_service.process_message(Body)
-        logger.info(f"🤖 Resposta da IA: {ai_response}")
+# Função para transcrever áudio com Whisper
+async def transcribe_audio(media_url: str) -> str:
+    logger.info(f"🎙️ Transcrevendo áudio de {media_url}")
 
-        # Busca token do usuário no Supabase
-        token = await supabase_client.get_calendar_token(From, provider="google")
-        if not token:
-            logger.warning("⚠️ Nenhum token encontrado")
-            await twilio_service.send_message(
-                From,
-                f"📌 Para agendar eventos, preciso que você conecte seu Google Calendar.\n"
-                f"Clique aqui para conectar: {os.getenv('BASE_URL')}/google/connect?user_phone={From}"
-            )
-            return {"status": "ok"}
+    try:
+        async with httpx.AsyncClient() as client:
+            audio = await client.get(media_url)
+            audio_bytes = audio.content
 
-        # Aqui você pode integrar com o Google Calendar
-        await twilio_service.send_message(From, ai_response)
+        transcript = await openai.Audio.atranscribe(
+            "whisper-1",
+            file=("audio.ogg", audio_bytes, "audio/ogg")
+        )
+        text = transcript["text"]
+        logger.info(f"🎙️ Transcrição: {text}")
+        return text
+    except Exception as e:
+        logger.error(f"❌ Erro ao transcrever áudio: {e}")
+        return None
 
-        return {"status": "ok"}
+
+# Rota raiz (teste)
+@app.get("/")
+async def root():
+    return {"message": "🤖 Secretária pessoal online!"}
+
+
+# Webhook do Twilio (entrada de mensagens WhatsApp)
+@app.post("/webhook/whatsapp")
+async def whatsapp_webhook(
+    request: Request,
+    From: str = Form(...),
+    Body: str = Form(""),
+    NumMedia: str = Form("0"),
+    MediaUrl0: str = Form(None)
+):
+    logger.info(f"📩 Mensagem recebida de {From}: {Body if Body else '[áudio]'}")
+
+    resp = MessagingResponse()
+    msg = resp.message()
+
+    try:
+        # Caso seja áudio
+        if NumMedia != "0" and MediaUrl0:
+            await msg.body("🔎 Analisando seu áudio, aguarde...")
+            text = await transcribe_audio(MediaUrl0)
+            if not text:
+                msg.body("⚠️ Não consegui transcrever seu áudio. Tente novamente.")
+            else:
+                reply = await process_text_message(text)
+                msg.body(f"✅ Transcrição: {text}\n\n🤖 {reply}")
+
+        # Caso seja texto
+        else:
+            if Body.strip().lower() in ["oi", "olá", "ola", "configurações", "configuracoes"]:
+                menu = (
+                    "👋 Olá, eu sou sua secretária pessoal.\n"
+                    "Quais calendários deseja vincular?\n\n"
+                    "1️⃣ Google Calendar\n"
+                    "2️⃣ Outlook Calendar\n"
+                    "3️⃣ Apple Calendar\n"
+                    "4️⃣ Configurações\n\n"
+                    "Digite o número da opção desejada."
+                )
+                msg.body(menu)
+            else:
+                await msg.body("🔎 Analisando suas informações, aguarde...")
+                reply = await process_text_message(Body)
+                msg.body(f"🤖 {reply}")
 
     except Exception as e:
         logger.error(f"❌ Erro no webhook: {e}")
-        await twilio_service.send_message(From, "⚠️ Ocorreu um erro ao processar sua mensagem.")
-        raise HTTPException(status_code=500, detail=str(e))
+        msg.body("⚠️ Ocorreu um erro ao processar sua mensagem.")
 
-
-@app.get("/google/connect")
-async def connect_google(user_phone: str):
-    logger.info(f"🔗 Usuário {user_phone} acessou a página de conexão do Google.")
-    return HTMLResponse(f"""
-        <h3>Conectar Google Calendar</h3>
-        <p>Usuário: {user_phone}</p>
-        <p><a href='/google/oauth?user_phone={user_phone}'>Clique aqui para conectar seu Google Calendar</a></p>
-    """)
+    return PlainTextResponse(str(resp), media_type="application/xml")
