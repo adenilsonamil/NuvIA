@@ -1,23 +1,44 @@
 import os
 from openai import OpenAI
 
-# Inicializa o cliente OpenAI com a chave da variável de ambiente
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def interpret_text(prompt: str) -> str:
+def interpret_text(user_message: str) -> dict:
     """
-    Usa o modelo GPT para interpretar o texto recebido no WhatsApp.
+    Interpreta a intenção do usuário (reunião, lembrete, outro).
+    Retorna um dicionário estruturado.
     """
+
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",  # modelo rápido e barato para interpretar texto
+            model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Você é um assistente de calendário inteligente."},
-                {"role": "user", "content": prompt}
-            ]
+                {
+                    "role": "system",
+                    "content": (
+                        "Você é uma secretária pessoal inteligente. "
+                        "Sua função é interpretar mensagens em português e classificá-las em: "
+                        "1) 'reuniao' → quando o usuário pede para agendar reunião. "
+                        "2) 'lembrete' → quando o usuário pede para ser lembrado de algo. "
+                        "3) 'outro' → qualquer coisa diferente. "
+                        "Sempre extraia data, hora e descrição quando possível."
+                    )
+                },
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.3
         )
 
-        return response.choices[0].message.content
+        content = response.choices[0].message.content.strip()
+
+        # Força o retorno em JSON (tratamento de exceções)
+        import json
+        try:
+            data = json.loads(content)
+        except Exception:
+            data = {"intent": "outro", "text": content}
+
+        return data
+
     except Exception as e:
-        print(f"❌ Erro ao interpretar com OpenAI: {e}")
-        r
+        return {"intent": "erro", "text": f"⚠️ Erro na interpretação: {str(e)}"}
