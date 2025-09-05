@@ -1,54 +1,71 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse, JSONResponse
-from services import twilio_service, openai_service, google_calendar
-from services.supabase_client import save_message
+import os
 import logging
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import PlainTextResponse
+from services import twilio_service, openai_service, google_calendar
+
+# Configuração de logs
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
 @app.get("/")
-async def root():
-    return {"status": "ok", "message": "Assistente de Agenda rodando!"}
+async def home():
+    return {"status": "✅ Secretaria Virtual rodando com sucesso!"}
 
-# === GOOGLE OAUTH ===
-@app.get("/google/login")
-async def google_login(user_id: str):
-    url = google_calendar.get_google_auth_url(user_id)
-    return RedirectResponse(url)
-
-@app.get("/google/callback")
-async def google_callback(code: str, state: str):
-    tokens = google_calendar.exchange_code_for_tokens(code, state)
-    return JSONResponse({"message": "Autorização concluída com sucesso!", "tokens": tokens})
-
-# === WEBHOOK TWILIO ===
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook(request: Request):
-    data = await request.form()
-    user_number = data.get("From")
-    text = data.get("Body", "").strip().lower()
-
-    logging.info(f"📩 Mensagem recebida de {user_number}: {text}")
-
+async def whatsapp_webhook(
+    request: Request,
+    Body: str = Form(...),
+    From: str = Form(...)
+):
+    """
+    Webhook do Twilio para receber mensagens do WhatsApp
+    """
     try:
-        # Exemplo: se o usuário pede reunião
-        if "reunião" in text or "lembrete" in text:
-            # aqui o ideal é usar OpenAI para extrair data/hora corretamente
-            start_time = "2025-09-06T10:00:00"  
-            end_time = "2025-09-06T11:00:00"  
+        logger.info(f"📩 Mensagem recebida de {From}: {Body}")
 
-            try:
-                event = google_calendar.create_event(user_number, "Reunião Importante", start_time, end_time)
-                response_text = f"✅ Reunião criada no seu Google Calendar: {event.get('htmlLink')}"
-            except Exception as e:
-                response_text = f"⚠️ Preciso que você autorize o Google Calendar. Acesse: https://nuvia-pk4n.onrender.com/google/login?user_id={user_number}"
+        # Interpretação da mensagem usando OpenAI
+        meeting_info = await openai_service.extract_meeting_info(Body)
 
-        else:
-            response_text = "🤖 Posso ajudar com reuniões e lembretes. O que deseja registrar?"
+        if not meeting_info or "data_hora" not in meeting_info:
+            resposta = "❌ Não consegui entender os detalhes da reunião. Pode repetir de outra forma?"
+            await twilio_service.send_message(From, resposta)
+            return PlainTextResponse("OK")
 
-        await twilio_service.send_message(user_number, response_text)
-        return JSONResponse({"status": "ok"})
+        # Criar evento no Google Calendar
+        event = await google_calendar.create_event(
+            titulo=meeting_info.get("titulo", "Reunião"),
+            data_hora=meeting_info["data_hora"],
+            local=meeting_info.get("local", ""),
+            notas=meeting_info.get("notas", "")
+        )
+
+        # Montar resposta humanizada
+        resposta = (
+            "📅 Reunião confirmada!\n"
+            f"• **Título**: {meeting_info.get('titulo', 'Reunião')}\n"
+            f"• **Data/Hora**: {meeting_info['data_hora']}\n"
+        )
+
+        if meeting_info.get("local"):
+            resposta += f"• **Local**: {meeting_info['local']}\n"
+        if meeting_info.get("notas"):
+            resposta += f"• **Notas**: {meeting_info['notas']}\n"
+
+        resposta += "✅ Evento adicionado ao Google Calendar."
+
+        # Enviar confirmação para o usuário
+        await twilio_service.send_message(From, resposta)
+        logger.info("✅ Evento criado e resposta enviada")
+
+        return PlainTextResponse("OK")
 
     except Exception as e:
-        logging.error(f"Erro no webhook: {e}")
-        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+        logger.error(f"Erro no webhook: {e}")
+        await twilio_service.send_message(
+            From,
+            "⚠️ Ocorreu um erro ao tentar registrar sua reunião. Tente novamente em instantes."
+        )
+        return PlainTextResponse("Erro interno", status_code=500)
