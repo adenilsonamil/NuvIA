@@ -1,94 +1,83 @@
+# services/supabase_client.py
+
 import os
 import logging
-from supabase import create_client, Client
+import httpx
 
-logger = logging.getLogger(__name__)
-
-# 🔑 Configuração
+# Variáveis de ambiente
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("❌ Variáveis SUPABASE_URL e SUPABASE_KEY precisam estar configuradas no .env")
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+logger = logging.getLogger(__name__)
 
 
-# -------------------------------
-# 🔹 Salvar token no Supabase
-# -------------------------------
-def save_token(user_phone: str, provider: str, token_data: dict) -> bool:
+async def get_calendar_token(user_phone: str, provider: str = "google"):
     """
-    Salva ou atualiza o token do usuário no Supabase
-    :param user_phone: número do usuário (ex: whatsapp:+556291317326)
-    :param provider: provedor do calendário (ex: 'google')
-    :param token_data: dicionário com o token e refresh_token
+    Busca o token de calendário no Supabase.
+    :param user_phone: Número do WhatsApp no formato whatsapp:+55xxxxxxxxx
+    :param provider: Provedor do calendário (default: google)
+    :return: Access token ou None se não encontrado
     """
     try:
-        logger.info(f"💾 Salvando token para {user_phone} ({provider})")
+        url = f"{SUPABASE_URL}/rest/v1/calendars"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}"
+        }
+        params = {
+            "select": "*",
+            "user_phone": f"eq.{user_phone}",
+            "provider": f"eq.{provider}"
+        }
 
-        resp = supabase.table("calendars").upsert({
-            "user_phone": user_phone,
-            "provider": provider,
-            "token_data": token_data
-        }).execute()
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, headers=headers, params=params)
 
-        if resp.data:
-            logger.info("✅ Token salvo/atualizado com sucesso no Supabase")
-            return True
+        if resp.status_code == 200:
+            data = resp.json()
+            if data:
+                token = data[0].get("access_token")
+                logger.info(f"✅ Token encontrado para {user_phone}")
+                return token
+            else:
+                logger.warning(f"⚠️ Nenhum token encontrado para {user_phone}")
+                return None
         else:
-            logger.warning("⚠️ Nenhum dado retornado ao salvar token")
-            return False
-    except Exception as e:
-        logger.error(f"❌ Erro ao salvar token: {e}")
-        return False
-
-
-# -------------------------------
-# 🔹 Buscar token salvo
-# -------------------------------
-def get_token(user_phone: str, provider: str = "google") -> dict | None:
-    """
-    Busca o token de um usuário no Supabase
-    :param user_phone: número do usuário
-    :param provider: provedor (default = google)
-    :return: token_data (dict) ou None
-    """
-    try:
-        logger.info(f"🔎 Buscando token de {user_phone} para provider={provider}")
-
-        resp = supabase.table("calendars").select("*").eq("user_phone", user_phone).eq("provider", provider).execute()
-
-        if resp.data and len(resp.data) > 0:
-            token = resp.data[0]["token_data"]
-            logger.info("✅ Token encontrado")
-            return token
-        else:
-            logger.warning("⚠️ Nenhum token encontrado")
+            logger.error(f"❌ Erro Supabase ({resp.status_code}): {resp.text}")
             return None
+
     except Exception as e:
-        logger.error(f"❌ Erro ao buscar token: {e}")
+        logger.error(f"❌ Falha ao buscar token Supabase: {e}")
         return None
 
 
-# -------------------------------
-# 🔹 Remover token
-# -------------------------------
-def delete_token(user_phone: str, provider: str = "google") -> bool:
+async def save_calendar_token(user_phone: str, provider: str, access_token: str):
     """
-    Remove o token do usuário (ex: logout)
+    Salva ou atualiza o token de calendário no Supabase.
     """
     try:
-        logger.info(f"🗑️ Removendo token de {user_phone} para provider={provider}")
+        url = f"{SUPABASE_URL}/rest/v1/calendars"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "user_phone": user_phone,
+            "provider": provider,
+            "access_token": access_token
+        }
 
-        resp = supabase.table("calendars").delete().eq("user_phone", user_phone).eq("provider", provider).execute()
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(url, headers=headers, json=payload)
 
-        if resp.data:
-            logger.info("✅ Token removido com sucesso")
+        if resp.status_code in [200, 201]:
+            logger.info(f"✅ Token salvo/atualizado para {user_phone}")
             return True
         else:
-            logger.warning("⚠️ Nenhum token encontrado para remover")
+            logger.error(f"❌ Erro ao salvar token: {resp.text}")
             return False
+
     except Exception as e:
-        logger.error(f"❌ Erro ao remover token: {e}")
+        logger.error(f"❌ Falha ao salvar token Supabase: {e}")
         return False
