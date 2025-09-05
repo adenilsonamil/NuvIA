@@ -8,14 +8,33 @@ url = os.getenv("SUPABASE_URL")
 key = os.getenv("SUPABASE_KEY")
 supabase = create_client(url, key)
 
-def get_token(user_phone: str, provider: str = "google") -> dict:
-    """Busca token do usuário no Supabase."""
+def save_state(user_phone: str, state: str):
+    """Salva o state do OAuth temporário"""
     try:
-        response = supabase.table("calendars").select("*").eq("user_phone", user_phone).eq("provider", provider).execute()
-        if response.data:
-            return response.data[0]
-        logger.warning(f"⚠️ Nenhum token encontrado para provider={provider}")
+        supabase.table("oauth_state").insert({"user_phone": user_phone, "state": state}).execute()
+    except Exception as e:
+        logger.error(f"❌ Erro ao salvar state: {e}")
+
+def get_user_by_state(state: str):
+    """Recupera o usuário associado ao state"""
+    try:
+        resp = supabase.table("oauth_state").select("*").eq("state", state).execute()
+        if resp.data:
+            return resp.data[0]["user_phone"]
         return None
     except Exception as e:
-        logger.error(f"❌ Erro ao buscar token: {e}")
+        logger.error(f"❌ Erro ao buscar state: {e}")
         return None
+
+def save_token(user_phone: str, provider: str, token_data: dict):
+    """Salva ou atualiza token de acesso"""
+    try:
+        supabase.table("calendars").upsert({
+            "user_phone": user_phone,
+            "provider": provider,
+            "token_data": token_data
+        }).execute()
+        logger.info(f"✅ Token salvo para {user_phone}")
+    except Exception as e:
+        logger.error(f"❌ Erro ao salvar token: {e}")
+
