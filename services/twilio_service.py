@@ -21,7 +21,7 @@ def send_message(to: str, body: str):
             raise ValueError("Número remetente TWILIO_WHATSAPP_NUMBER não configurado.")
 
         message = client.messages.create(
-            from_=TWILIO_WHATSAPP_NUMBER,
+            from_=TWILIO_PHONE,
             to=to,
             body=body
         )
