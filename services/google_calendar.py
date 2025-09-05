@@ -1,92 +1,91 @@
 import os
-import json
-import requests
-from fastapi import HTTPException
+import logging
+from datetime import datetime, timedelta
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 from services.supabase_client import save_token, get_token
 
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-OAUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-TOKEN_URL = "https://oauth2.googleapis.com/token"
-CALENDAR_API = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+# Escopos necessários para criar eventos
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
-SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+def get_calendar_service(user_id="default"):
+    """
+    Recupera o serviço do Google Calendar usando token armazenado no Supabase.
+    """
+    try:
+        token_data = get_token(user_id)
+        if not token_data:
+            logger.warning("⚠️ Nenhum token encontrado, usuário precisa autorizar o acesso.")
+            return None
 
-def get_google_auth_url(user_id: str):
-    params = {
-        "client_id": GOOGLE_CLIENT_ID,
-        "redirect_uri": GOOGLE_REDIRECT_URI,
-        "response_type": "code",
-        "scope": " ".join(SCOPES),
-        "access_type": "offline",
-        "prompt": "consent",
-        "state": user_id
-    }
-    url = requests.Request("GET", OAUTH_URL, params=params).prepare().url
-    return url
+        creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+        service = build("calendar", "v3", credentials=creds)
+        return service
+    except Exception as e:
+        logger.error(f"❌ Erro ao inicializar Google Calendar: {e}")
+        return None
 
-def exchange_code_for_tokens(code: str, user_id: str):
-    data = {
-        "code": code,
-        "client_id": GOOGLE_CLIENT_ID,
-        "client_secret": GOOGLE_CLIENT_SECRET,
-        "redirect_uri": GOOGLE_REDIRECT_URI,
-        "grant_type": "authorization_code"
-    }
-    response = requests.post(TOKEN_URL, data=data)
-    if response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Erro ao obter tokens do Google")
+def create_event(meeting_info: dict, user_id="default"):
+    """
+    Cria um evento no Google Calendar com base nas informações extraídas pela IA.
+    meeting_info esperado:
+      {
+        "titulo": "Reunião sobre o projeto X",
+        "data_hora": "amanhã às 14h",
+        "local": "escritório",
+        "notas": "Participante: João"
+      }
+    """
+    try:
+        service = get_calendar_service(user_id)
+        if not service:
+            return "⚠️ Não foi possível acessar sua agenda. Autorize o Google Calendar."
 
-    tokens = response.json()
-    save_token(user_id, "google", tokens)
-    return tokens
+        # Interpretação da data/hora (a IA pode retornar texto em vez de ISO)
+        start_time, end_time = parse_datetime(meeting_info.get("data_hora"))
 
-def refresh_token(user_id: str):
-    tokens = get_token(user_id, "google")
-    if not tokens or "refresh_token" not in tokens:
-        raise HTTPException(status_code=401, detail="Usuário precisa autorizar novamente")
+        event = {
+            "summary": meeting_info.get("titulo", "Reunião"),
+            "location": meeting_info.get("local", ""),
+            "description": meeting_info.get("notas", ""),
+            "start": {"dateTime": start_time, "timeZone": "America/Sao_Paulo"},
+            "end": {"dateTime": end_time, "timeZone": "America/Sao_Paulo"},
+        }
 
-    data = {
-        "client_id": GOOGLE_CLIENT_ID,
-        "client_secret": GOOGLE_CLIENT_SECRET,
-        "refresh_token": tokens["refresh_token"],
-        "grant_type": "refresh_token"
-    }
-    response = requests.post(TOKEN_URL, data=data)
-    if response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Erro ao atualizar token")
+        created_event = service.events().insert(calendarId="primary", body=event).execute()
 
-    new_tokens = response.json()
-    tokens.update(new_tokens)
-    save_token(user_id, "google", tokens)
-    return tokens
+        logger.info(f"✅ Evento criado: {created_event.get('htmlLink')}")
+        return f"📅 Reunião criada: *{meeting_info.get('titulo', 'Reunião')}*\n🕒 {meeting_info.get('data_hora')}\n📍 {meeting_info.get('local', 'Não informado')}\n🔗 {created_event.get('htmlLink')}"
 
-def create_event(user_id: str, summary: str, start_time: str, end_time: str):
-    tokens = get_token(user_id, "google")
-    if not tokens:
-        raise HTTPException(status_code=401, detail="Usuário não autenticado")
+    except Exception as e:
+        logger.error(f"❌ Erro ao criar evento no Google Calendar: {e}")
+        return "❌ Não foi possível criar a reunião no Google Calendar."
 
-    access_token = tokens.get("access_token")
-    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+def parse_datetime(data_hora_str: str):
+    """
+    Converte a string recebida da IA em um intervalo de data/hora.
+    - Se a IA retornar texto como 'amanhã às 14h', tenta interpretar.
+    - Se for vazio, agenda para 1h após o horário atual.
+    """
+    try:
+        from dateutil import parser, relativedelta
 
-    event_data = {
-        "summary": summary,
-        "start": {"dateTime": start_time, "timeZone": "America/Sao_Paulo"},
-        "end": {"dateTime": end_time, "timeZone": "America/Sao_Paulo"},
-    }
+        # Se for vazio, cria para daqui 1h
+        if not data_hora_str:
+            start = datetime.now() + timedelta(hours=1)
+            end = start + timedelta(hours=1)
+            return start.isoformat(), end.isoformat()
 
-    response = requests.post(CALENDAR_API, headers=headers, data=json.dumps(event_data))
+        # Tenta interpretar texto livre
+        start = parser.parse(data_hora_str, fuzzy=True, dayfirst=True)
+        end = start + timedelta(hours=1)
+        return start.isoformat(), end.isoformat()
 
-    if response.status_code == 401:
-        # Token expirado → tenta refresh
-        tokens = refresh_token(user_id)
-        access_token = tokens.get("access_token")
-        headers["Authorization"] = f"Bearer {access_token}"
-        response = requests.post(CALENDAR_API, headers=headers, data=json.dumps(event_data))
-
-    if response.status_code not in [200, 201]:
-        raise HTTPException(status_code=response.status_code, detail=f"Erro ao criar evento: {response.text}")
-
-    return response.json()
+    except Exception:
+        logger.warning(f"⚠️ Não consegui interpretar '{data_hora_str}', usando 1h a partir de agora.")
+        start = datetime.now() + timedelta(hours=1)
+        end = start + timedelta(hours=1)
+        return start.isoformat(), end.isoformat()
