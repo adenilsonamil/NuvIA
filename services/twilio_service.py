@@ -1,32 +1,25 @@
-import os
 import logging
+import os
 from twilio.rest import Client
 
-# Configuração de log
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("services.twilio_service")
 
-# Credenciais do Twilio (carregadas de variáveis de ambiente)
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE = os.getenv("TWILIO_PHONE")  # Ex: "whatsapp:+14155238886"
+TWILIO_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_PHONE = os.getenv("TWILIO_WHATSAPP_NUMBER")
 
-# Cliente Twilio
-client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+client = Client(TWILIO_SID, TWILIO_TOKEN)
 
-# Função assíncrona para envio de mensagem
-async def send_message(to: str, body: str):
-    """
-    Envia uma mensagem pelo WhatsApp usando Twilio.
-    """
+async def send_message(to_number: str, body: str):
+    """Envia mensagem WhatsApp pelo Twilio."""
     try:
-        message = client.messages.create(
-            from_=TWILIO_PHONE,
-            to=to,
+        msg = client.messages.create(
+            from_=f"whatsapp:{TWILIO_PHONE}",
+            to=to_number,
             body=body
         )
-        logger.info(f"✅ Mensagem enviada com SID: {message.sid}")
-        return message.sid
+        logger.info(f"✅ Mensagem enviada com SID: {msg.sid}")
+        return msg.sid
     except Exception as e:
-        logger.error(f"❌ Erro ao enviar mensagem para {to}: {e}")
+        logger.error(f"❌ Erro ao enviar mensagem para {to_number}: {e}")
         return None
