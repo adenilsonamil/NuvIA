@@ -1,69 +1,54 @@
-import os
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import PlainTextResponse
-from dotenv import load_dotenv
-
-from services import openai_service, twilio_service, google_calendar
-from db.supabase_client import save_event
-
-load_dotenv()
+from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse, JSONResponse
+from services import twilio_service, openai_service, google_calendar
+from services.supabase_client import save_message
+import logging
 
 app = FastAPI()
 
 @app.get("/")
-def home():
-    return {"status": "✅ Secretária pessoal ativa!"}
+async def root():
+    return {"status": "ok", "message": "Assistente de Agenda rodando!"}
 
+# === GOOGLE OAUTH ===
+@app.get("/google/login")
+async def google_login(user_id: str):
+    url = google_calendar.get_google_auth_url(user_id)
+    return RedirectResponse(url)
 
+@app.get("/google/callback")
+async def google_callback(code: str, state: str):
+    tokens = google_calendar.exchange_code_for_tokens(code, state)
+    return JSONResponse({"message": "Autorização concluída com sucesso!", "tokens": tokens})
+
+# === WEBHOOK TWILIO ===
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(request: Request):
+    data = await request.form()
+    user_number = data.get("From")
+    text = data.get("Body", "").strip().lower()
+
+    logging.info(f"📩 Mensagem recebida de {user_number}: {text}")
+
     try:
-        form = await request.form()
-        sender = form.get("From")
-        message_body = form.get("Body")
+        # Exemplo: se o usuário pede reunião
+        if "reunião" in text or "lembrete" in text:
+            # aqui o ideal é usar OpenAI para extrair data/hora corretamente
+            start_time = "2025-09-06T10:00:00"  
+            end_time = "2025-09-06T11:00:00"  
 
-        print(f"📩 Mensagem recebida de {sender}: {message_body}")
-
-        # Interpreta a intenção
-        intent_data = openai_service.interpret_text(message_body)
-        intent = intent_data.get("intent", "outro")
-
-        reply = ""
-        if intent == "reuniao":
-            description = intent_data.get("descricao", "Reunião")
-            date = intent_data.get("data", None)
-            time = intent_data.get("hora", None)
-
-            if date and time:
-                google_calendar.create_event(description, date, time)
-                reply = f"📅 Reunião agendada: {description} em {date} às {time}."
-            else:
-                reply = "⚠️ Preciso da data e hora para agendar a reunião."
-
-        elif intent == "lembrete":
-            descricao = intent_data.get("descricao", "Lembrete")
-            date = intent_data.get("data", None)
-            save_event(sender, descricao, date)
-            reply = f"⏰ Lembrete criado: {descricao} ({date})."
-
-        elif intent == "outro":
-            reply = "🤖 Posso ajudar com reuniões e lembretes. O que deseja registrar?"
-
-        elif intent == "erro":
-            reply = intent_data.get("text", "⚠️ Ocorreu um erro na interpretação.")
+            try:
+                event = google_calendar.create_event(user_number, "Reunião Importante", start_time, end_time)
+                response_text = f"✅ Reunião criada no seu Google Calendar: {event.get('htmlLink')}"
+            except Exception as e:
+                response_text = f"⚠️ Preciso que você autorize o Google Calendar. Acesse: https://nuvia-pk4n.onrender.com/google/login?user_id={user_number}"
 
         else:
-            reply = "⚠️ Não entendi sua solicitação. Pode reformular?"
+            response_text = "🤖 Posso ajudar com reuniões e lembretes. O que deseja registrar?"
 
-        # Envia resposta pelo Twilio
-        print(f"📤 Respondendo para {sender}: {reply}")
-        twilio_service.send_whatsapp_message(sender, reply)
-
-        return PlainTextResponse("OK")
+        await twilio_service.send_message(user_number, response_text)
+        return JSONResponse({"status": "ok"})
 
     except Exception as e:
-        error_msg = f"❌ Erro no processamento: {str(e)}"
-        print(error_msg)
-        if "From" in locals():
-            twilio_service.send_whatsapp_message(sender, error_msg)
-        return PlainTextResponse("ERROR", status_code=500)
+        logging.error(f"Erro no webhook: {e}")
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
