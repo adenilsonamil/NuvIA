@@ -1,54 +1,40 @@
-import logging
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, Request
 from services import twilio_service, openai_service
 
 app = FastAPI()
-logger = logging.getLogger("app")
-logging.basicConfig(level=logging.INFO)
-
-@app.get("/")
-async def root():
-    return {"status": "✅ API funcionando"}
 
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook(
-    request: Request,
-    From: str = Form(...),
-    Body: str = Form(None),
-    MediaUrl0: str = Form(None)
-):
-    """
-    Webhook que recebe mensagens do WhatsApp via Twilio.
-    """
+async def whatsapp_webhook(request: Request):
+    data = await request.form()
+    user_message = data.get("Body", "")
+    from_number = data.get("From", "")
+
     try:
-        logger.info(f"📩 Mensagem recebida de {From}: {Body or '[áudio]'}")
+        app.logger.info(f"📩 Mensagem recebida de {from_number}: {user_message}")
 
-        reply = None
+        # Extrair evento estruturado da IA
+        event = await openai_service.get_event_from_text(user_message)
 
-        if Body:
-            # Mensagem de texto → envia para GPT
-            logger.info(f"🤖 Enviando para GPT: {Body}")
-            reply = await openai_service.get_chat_response(Body)
+        if event and "titulo" in event:
+            titulo = event.get("titulo")
+            descricao = event.get("descricao", "")
+            data_evento = event.get("data")
+            hora_evento = event.get("hora")
 
-        elif MediaUrl0:
-            # Mensagem de áudio → transcreve e envia para GPT
-            logger.info(f"🎤 Áudio recebido de {From}: {MediaUrl0}")
-            transcript = await openai_service.transcribe_audio(MediaUrl0)
-            logger.info(f"📝 Transcrição: {transcript}")
-            reply = await openai_service.get_chat_response(transcript)
+            resumo = (
+                f"✅ Evento criado com sucesso!\n\n"
+                f"📌 *{titulo}*\n"
+                f"📝 {descricao}\n"
+                f"📅 {data_evento} às {hora_evento}"
+            )
 
-        if reply:
-            logger.info(f"🤖 Resposta da IA: {reply}")
-            twilio_service.send_message(From, reply)  # 🔹 sem await
+            # (futuramente: salvar em Supabase + criar no calendário real)
+            await twilio_service.send_message(from_number, resumo)
         else:
-            logger.warning("⚠️ Nenhuma resposta gerada pela IA")
-            twilio_service.send_message(From, "⚠️ Não consegui entender sua mensagem.")
-
-        return PlainTextResponse("OK", status_code=200)
+            await twilio_service.send_message(from_number, "⚠️ Não consegui entender os detalhes do evento. Pode reformular?")
 
     except Exception as e:
-        logger.error(f"❌ Erro no webhook: {e}")
-        # 🔹 envia mensagem de erro sem await
-        twilio_service.send_message(From, "⚠️ Ocorreu um erro ao processar sua mensagem.")
-        return PlainTextResponse("Erro interno", status_code=500)
+        app.logger.error(f"❌ Erro no webhook: {e}")
+        await twilio_service.send_message(from_number, "⚠️ Ocorreu um erro ao processar sua mensagem.")
+
+    return {"status": "ok"}
