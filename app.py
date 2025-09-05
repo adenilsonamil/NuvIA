@@ -1,71 +1,54 @@
 import logging
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import PlainTextResponse
-import uvicorn
-import os
+from services import twilio_service, openai_service
 
-from services import twilio_service, openai_service, supabase_client
-
-app = FastAPI()
+# Configura logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
 
+# Cria app FastAPI
+app = FastAPI()
 
 @app.get("/")
 async def root():
-    return {"status": "✅ Secretária Pessoal no WhatsApp rodando com sucesso!"}
+    return {"message": "🚀 Nuvia está rodando!"}
 
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(
     request: Request,
+    Body: str = Form(...),
     From: str = Form(...),
-    Body: str = Form(None),
-    MediaUrl0: str = Form(None),
     NumMedia: int = Form(0),
 ):
     """
-    Webhook principal do Twilio.
-    Recebe mensagens de texto ou áudio do WhatsApp, processa com IA e responde.
+    Webhook que recebe mensagens do WhatsApp via Twilio.
+    - Se texto → manda para IA processar texto
+    - Se áudio → (futuro) manda transcrever e processar
     """
     try:
-        logger.info(f"📩 Mensagem recebida de {From}: {Body or '[Áudio]'}")
+        logger.info(f"📩 Mensagem recebida de {From}: {Body}")
 
-        # Sempre avisa que está processando
-        await twilio_service.send_message(From, "⏳ Estou analisando sua mensagem...")
-
-        # Se for áudio
-        if NumMedia and MediaUrl0:
-            transcript = await openai_service.transcribe_audio(MediaUrl0)
-            if not transcript:
-                await twilio_service.send_message(
-                    From, "⚠️ Não consegui entender o áudio. Tente novamente."
-                )
-                return PlainTextResponse("OK", status_code=200)
-
-            logger.info(f"🎙️ Áudio transcrito: {transcript}")
-            reply = await openai_service.process_text_message(transcript)
-
-        # Se for texto
+        # Caso seja áudio
+        if NumMedia and int(NumMedia) > 0:
+            logger.info("🎤 Mensagem de áudio recebida - transcrição não implementada ainda")
+            reply = await openai_service.process_audio_message("Áudio recebido (simulado)")
         else:
+            # Caso seja texto
             reply = await openai_service.process_text_message(Body)
 
         logger.info(f"🤖 Resposta da IA: {reply}")
 
-        # Envia resposta para o usuário
-        await twilio_service.send_message(From, reply)
+        # Envia resposta ao usuário pelo WhatsApp
+        await twilio_service.send_whatsapp_message(to_number=From, message=reply)
 
         return PlainTextResponse("OK", status_code=200)
 
     except Exception as e:
         logger.error(f"❌ Erro no webhook: {e}")
-        await twilio_service.send_message(
-            From, "⚠️ Ocorreu um erro ao processar sua mensagem."
+        await twilio_service.send_whatsapp_message(
+            to_number=From,
+            message="⚠️ Ocorreu um erro ao processar sua mensagem."
         )
         return PlainTextResponse("ERROR", status_code=500)
-
-
-# 🚀 Para rodar localmente
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
-    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True)
