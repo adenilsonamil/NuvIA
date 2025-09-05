@@ -1,72 +1,66 @@
-import os
 import logging
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import JSONResponse
+import os
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 
-from services import openai_service, supabase_client, twilio_service
+from services import twilio_service, openai_service, supabase_client
 
-# Configurações
+# Carrega variáveis do .env
 load_dotenv()
+
+# Configuração do log
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
 
-app = FastAPI(title="Nuvia Assistant")
+app = FastAPI()
 
-# Página inicial
-@app.get("/")
+
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    return {"status": "✅ API está rodando"}
+    return "<h2>🚀 API de Integração WhatsApp + Google Calendar</h2>"
 
 
-# Webhook do WhatsApp
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook(
-    request: Request,
-    From: str = Form(...),
-    Body: str = Form("")
-):
+async def whatsapp_webhook(request: Request):
     try:
+        form = await request.form()
+        From = form.get("From")
+        Body = form.get("Body")
+
         logger.info(f"📩 Mensagem recebida de {From}: {Body}")
 
-        # 🔎 Extrair informações com OpenAI
-        logger.info(f"services.openai_service:🔎 Extraindo informações da mensagem: {Body}")
-        response = await openai_service.process_message(Body)
+        # Processa mensagem com IA
+        ai_response = await openai_service.process_message(Body)
+        logger.info(f"🤖 Resposta da IA: {ai_response}")
 
-        # 🔎 Buscar token no Supabase
-        token = await supabase_client.get_token(From, provider="google")
-
+        # Busca token do usuário no Supabase
+        token = await supabase_client.get_calendar_token(From, provider="google")
         if not token:
-            msg = (
-                "📌 Para agendar eventos, preciso que você conecte seu Google Calendar.\n"
-                f"Clique aqui para conectar: {os.getenv('BASE_URL', 'https://nuvia-pk4n.onrender.com')}/google/connect?user_phone={From}"
+            logger.warning("⚠️ Nenhum token encontrado")
+            await twilio_service.send_message(
+                From,
+                f"📌 Para agendar eventos, preciso que você conecte seu Google Calendar.\n"
+                f"Clique aqui para conectar: {os.getenv('BASE_URL')}/google/connect?user_phone={From}"
             )
-            await twilio_service.send_message(From, msg)
-            return JSONResponse(content={"status": "ok", "message": "Token ausente, instrução enviada"})
+            return {"status": "ok"}
 
-        # Se tiver token, responde normalmente
-        if response:
-            await twilio_service.send_message(From, response)
-        else:
-            await twilio_service.send_message(From, "⚠️ Não consegui entender sua mensagem.")
+        # Aqui você pode integrar com o Google Calendar
+        await twilio_service.send_message(From, ai_response)
 
-        return JSONResponse(content={"status": "ok"})
+        return {"status": "ok"}
 
     except Exception as e:
         logger.error(f"❌ Erro no webhook: {e}")
-        # Envia fallback de erro
-        try:
-            await twilio_service.send_message(From, "⚠️ Ocorreu um erro ao processar sua mensagem.")
-        except Exception as e2:
-            logger.error(f"❌ Falha ao enviar fallback: {e2}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        await twilio_service.send_message(From, "⚠️ Ocorreu um erro ao processar sua mensagem.")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# Endpoint para conectar Google (simulação simples)
 @app.get("/google/connect")
-async def google_connect(user_phone: str):
+async def connect_google(user_phone: str):
     logger.info(f"🔗 Usuário {user_phone} acessou a página de conexão do Google.")
-    return {
-        "status": "ok",
-        "message": f"Usuário {user_phone} deve autenticar com o Google aqui."
-    }
+    return HTMLResponse(f"""
+        <h3>Conectar Google Calendar</h3>
+        <p>Usuário: {user_phone}</p>
+        <p><a href='/google/oauth?user_phone={user_phone}'>Clique aqui para conectar seu Google Calendar</a></p>
+    """)
