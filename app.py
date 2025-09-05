@@ -1,54 +1,69 @@
-from fastapi import FastAPI, Request
+import os
+from fastapi import FastAPI, Request, Form
 from fastapi.responses import PlainTextResponse
+from dotenv import load_dotenv
+
 from services import openai_service, twilio_service, google_calendar
-from db import supabase_client
-import uvicorn
+from db.supabase_client import save_event
+
+load_dotenv()
 
 app = FastAPI()
 
 @app.get("/")
-async def root():
-    return {"status": "ok", "message": "✅ NuvIA está rodando no Render!"}
+def home():
+    return {"status": "✅ Secretária pessoal ativa!"}
+
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(request: Request):
-    """
-    Endpoint que o Twilio chama quando recebe uma mensagem no WhatsApp.
-    """
     try:
         form = await request.form()
-        sender = form.get("From")  # Número do usuário
-        text = form.get("Body")    # Mensagem enviada
+        sender = form.get("From")
+        message_body = form.get("Body")
 
-        if not text:
-            return PlainTextResponse("⚠️ Nenhuma mensagem recebida.")
+        print(f"📩 Mensagem recebida de {sender}: {message_body}")
 
-        print(f"📩 Mensagem recebida de {sender}: {text}")
+        # Interpreta a intenção
+        intent_data = openai_service.interpret_text(message_body)
+        intent = intent_data.get("intent", "outro")
 
-        # Interpretação com OpenAI
-        intent = openai_service.interpret_text(text)
+        reply = ""
+        if intent == "reuniao":
+            description = intent_data.get("descricao", "Reunião")
+            date = intent_data.get("data", None)
+            time = intent_data.get("hora", None)
 
-        # Envia resposta ao usuário no WhatsApp
-        twilio_service.send_message(sender, f"📌 Você disse: {text}\n🤖 Interpretei como: {intent}")
+            if date and time:
+                google_calendar.create_event(description, date, time)
+                reply = f"📅 Reunião agendada: {description} em {date} às {time}."
+            else:
+                reply = "⚠️ Preciso da data e hora para agendar a reunião."
 
-        return PlainTextResponse("ok")
+        elif intent == "lembrete":
+            descricao = intent_data.get("descricao", "Lembrete")
+            date = intent_data.get("data", None)
+            save_event(sender, descricao, date)
+            reply = f"⏰ Lembrete criado: {descricao} ({date})."
+
+        elif intent == "outro":
+            reply = "🤖 Posso ajudar com reuniões e lembretes. O que deseja registrar?"
+
+        elif intent == "erro":
+            reply = intent_data.get("text", "⚠️ Ocorreu um erro na interpretação.")
+
+        else:
+            reply = "⚠️ Não entendi sua solicitação. Pode reformular?"
+
+        # Envia resposta pelo Twilio
+        print(f"📤 Respondendo para {sender}: {reply}")
+        twilio_service.send_whatsapp_message(sender, reply)
+
+        return PlainTextResponse("OK")
 
     except Exception as e:
-        print(f"❌ Erro no webhook: {e}")
-        return PlainTextResponse(f"Erro interno: {str(e)}", status_code=500)
-
-@app.get("/google/callback")
-async def google_callback(code: str):
-    """
-    Callback do Google OAuth2 para salvar tokens no Supabase.
-    """
-    try:
-        tokens = google_calendar.exchange_code_for_tokens(code)
-        supabase_client.save_calendar_tokens("google", tokens)
-        return {"status": "ok", "message": "Google Calendar vinculado com sucesso ✅"}
-    except Exception as e:
-        print(f"❌ Erro no callback do Google: {e}")
-        return {"status": "erro", "detalhe": str(e)}
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+        error_msg = f"❌ Erro no processamento: {str(e)}"
+        print(error_msg)
+        if "From" in locals():
+            twilio_service.send_whatsapp_message(sender, error_msg)
+        return PlainTextResponse("ERROR", status_code=500)
