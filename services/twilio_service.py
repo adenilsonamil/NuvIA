@@ -2,32 +2,31 @@ import os
 import logging
 from twilio.rest import Client
 
-# Configura o logger
+# Configuração de log
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Carrega variáveis de ambiente
+# Credenciais do Twilio (carregadas de variáveis de ambiente)
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE = os.getenv("TWILIO_PHONE")  # Exemplo: whatsapp:+14155238886
+TWILIO_PHONE = os.getenv("TWILIO_PHONE")  # Ex: "whatsapp:+14155238886"
 
-# Inicializa o cliente do Twilio
+# Cliente Twilio
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-def send_message(to: str, body: str):
+# Função assíncrona para envio de mensagem
+async def send_message(to: str, body: str):
     """
-    Envia mensagem de WhatsApp usando Twilio.
+    Envia uma mensagem pelo WhatsApp usando Twilio.
     """
     try:
-        if not TWILIO_PHONE:
-            raise ValueError("⚠️ TWILIO_PHONE não configurado nas variáveis de ambiente.")
-
         message = client.messages.create(
             from_=TWILIO_PHONE,
             to=to,
             body=body
         )
-        logging.info(f"✅ Mensagem enviada com SID: {message.sid}")
+        logger.info(f"✅ Mensagem enviada com SID: {message.sid}")
         return message.sid
     except Exception as e:
-        logging.error(f"❌ Erro ao enviar mensagem para {to}: {e}")
+        logger.error(f"❌ Erro ao enviar mensagem para {to}: {e}")
         return None
