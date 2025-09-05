@@ -1,133 +1,54 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
-import requests
-import urllib.parse
-
-# Serviços
-from services import twilio_service, openai_service, google_calendar
-from db.supabase_client import save_event, get_user_tokens, save_calendar_tokens, get_or_create_user
-import config
+from fastapi.responses import PlainTextResponse
+from services import openai_service, twilio_service, google_calendar
+from db import supabase_client
+import uvicorn
 
 app = FastAPI()
 
-
-# =========================
-# Rota inicial
-# =========================
 @app.get("/")
-def root():
-    return {"message": "🤖 Secretária Pessoal Online - NuvIA"}
+async def root():
+    return {"status": "ok", "message": "✅ NuvIA está rodando no Render!"}
 
-
-# =========================
-# Google OAuth - iniciar fluxo
-# =========================
-@app.get("/google/auth")
-async def google_auth():
-    base_url = "https://accounts.google.com/o/oauth2/v2/auth"
-    params = {
-        "response_type": "code",
-        "client_id": config.GOOGLE_CLIENT_ID,
-        "redirect_uri": config.GOOGLE_REDIRECT_URI,
-        "scope": "https://www.googleapis.com/auth/calendar",
-        "access_type": "offline",   # Garante refresh_token
-        "prompt": "consent"         # Força refresh_token na 1ª vez
-    }
-    auth_url = f"{base_url}?{urllib.parse.urlencode(params)}"
-    return RedirectResponse(auth_url)
-
-
-# =========================
-# Google OAuth - callback
-# =========================
-@app.get("/google/callback")
-async def google_callback(request: Request):
-    code = request.query_params.get("code")
-
-    if not code:
-        return {"error": "Código OAuth não recebido"}
-
-    # Trocar code por tokens
-    token_url = "https://oauth2.googleapis.com/token"
-    data = {
-        "code": code,
-        "client_id": config.GOOGLE_CLIENT_ID,
-        "client_secret": config.GOOGLE_CLIENT_SECRET,
-        "redirect_uri": config.GOOGLE_REDIRECT_URI,
-        "grant_type": "authorization_code"
-    }
-
-    resp = requests.post(token_url, data=data)
-    tokens = resp.json()
-
-    if "access_token" not in tokens:
-        return {"error": "Falha ao obter token", "details": tokens}
-
-    # ⚠️ Aqui você deve ligar com o usuário do WhatsApp
-    # Exemplo: salvar para "user_id" fixo até integrar fluxo real
-    user_id = "demo_user"
-
-    save_calendar_tokens(
-        user_id=user_id,
-        provider="google",
-        access_token=tokens["access_token"],
-        refresh_token=tokens.get("refresh_token"),
-        client_id=config.GOOGLE_CLIENT_ID,
-        client_secret=config.GOOGLE_CLIENT_SECRET,
-        expires_at=tokens.get("expires_in")
-    )
-
-    return {"status": "✅ Google Calendar conectado com sucesso"}
-
-
-# =========================
-# Webhook do WhatsApp (Twilio)
-# =========================
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(request: Request):
-    data = await request.form()
-    user_number = data.get("From")
-    message_type = "audio" if "MediaUrl0" in data else "text"
-    content = data.get("Body") if message_type == "text" else data.get("MediaUrl0")
+    """
+    Endpoint que o Twilio chama quando recebe uma mensagem no WhatsApp.
+    """
+    try:
+        form = await request.form()
+        sender = form.get("From")  # Número do usuário
+        text = form.get("Body")    # Mensagem enviada
 
-    # Garante que usuário existe no Supabase
-    user = get_or_create_user(user_number)
+        if not text:
+            return PlainTextResponse("⚠️ Nenhuma mensagem recebida.")
 
-    # Resposta inicial
-    twilio_service.send_message(user_number, "🔎 Estou analisando suas informações...")
+        print(f"📩 Mensagem recebida de {sender}: {text}")
 
-    # 1. Transcreve áudio se necessário
-    if message_type == "audio":
-        text = openai_service.transcribe_audio(content)
-    else:
-        text = content
+        # Interpretação com OpenAI
+        intent = openai_service.interpret_text(text)
 
-    # 2. Interpreta intenção
-    intent = openai_service.interpret_text(text)
+        # Envia resposta ao usuário no WhatsApp
+        twilio_service.send_message(sender, f"📌 Você disse: {text}\n🤖 Interpretei como: {intent}")
 
-    # 3. Pega tokens do calendário escolhido
-    tokens = get_user_tokens(user["id"], intent.get("calendar", "google"))
-    if not tokens:
-        twilio_service.send_message(
-            user_number,
-            "⚠️ Você ainda não autorizou esse calendário. Digite 'configurações' para conectar."
-        )
-        return {"status": "no_auth"}
+        return PlainTextResponse("ok")
 
-    # 4. Ações
-    if intent["action"] == "create":
-        event_id = google_calendar.create_event(tokens, intent)
-        save_event(user["id"], "google", event_id, intent["title"], intent["datetime"])
-        twilio_service.send_message(
-            user_number,
-            f"✅ Evento agendado: {intent['title']} em {intent['datetime']}"
-        )
+    except Exception as e:
+        print(f"❌ Erro no webhook: {e}")
+        return PlainTextResponse(f"Erro interno: {str(e)}", status_code=500)
 
-    elif intent["action"] == "delete":
-        # Exemplo futuro: google_calendar.delete_event()
-        twilio_service.send_message(
-            user_number,
-            f"🗑️ Solicitação para remover evento: {intent.get('title','[sem título]')}"
-        )
+@app.get("/google/callback")
+async def google_callback(code: str):
+    """
+    Callback do Google OAuth2 para salvar tokens no Supabase.
+    """
+    try:
+        tokens = google_calendar.exchange_code_for_tokens(code)
+        supabase_client.save_calendar_tokens("google", tokens)
+        return {"status": "ok", "message": "Google Calendar vinculado com sucesso ✅"}
+    except Exception as e:
+        print(f"❌ Erro no callback do Google: {e}")
+        return {"status": "erro", "detalhe": str(e)}
 
-    return {"status": "ok"}
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=10000)
